@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="et">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>BWB – Tere tulemast pardale!</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #031326;
+      color: #e6f6ff;
+      font-family: Arial, sans-serif;
+    }
+
+    canvas {
+      display: block;
+      touch-action: none;
+    }
+
+    nav {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 10;
+      display: flex;
+      gap: 8px;
+    }
+
+    button {
+      padding: 10px 15px;
+      border: 1px solid #68bce8;
+      border-radius: 24px;
+      background: rgba(12, 61, 100, 0.9);
+      color: #e6f6ff;
+      font: 13px Arial, sans-serif;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #176598;
+    }
+
+    button:focus-visible {
+      outline: 3px solid #fff;
+      outline-offset: 3px;
+    }
+
+    #teade {
+      position: fixed;
+      bottom: 48px;
+      width: 100%;
+      padding: 0 20px;
+      text-align: center;
+      font-size: 12px;
+      color: #ffdcab;
+      pointer-events: none;
+    }
+
+    #laadimine {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 24px;
+      background: #031326;
+      z-index: 5;
+    }
+
+    #laadimine[hidden] {
+      display: none;
+    }
+  </style>
+
+  <!-- p5.js laadimiseks on vaja internetiühendust. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+</head>
+
+<body>
+  <nav aria-label="Kaardi juhtimine">
+    <button id="muusika" type="button">♫ Muusika sisse</button>
+    <button id="uuesti" type="button">↻ Uuesti</button>
+  </nav>
+
+  <div id="laadimine" role="status">Valmistame tervitust ette…</div>
+  <div id="teade" role="status"></div>
+
+  <script>
+    // ─── MUUDETAVAD NUMBRILISED PARAMEETRID ────────────────────
+
+    const SEADED = {
+      ymbrikuLaius: 340,
+      ymbrikuKorgus: 220,
+
+      fotoLaius: 258,
+      fotoKorgus: 188,
+      fotoVahe: 22,
+      fotoHeljumine: 4,
+
+      tahtedeArv: 130,
+      sademeArv: 210,
+      plahvatuseKiirus: 10,
+      gravitatsioon: 0.045,
+
+      avanemiseKestus: 1350,
+      fotodeViivitus: 110,
+
+      laineteKiirus: 0.7,
+
+      muusikaTempo: 88,
+      muusikaHelitugevus: 0.12
+    };
+
+    // ─── FOTOD JA MUUSIKA ─────────────────────────────────────
+    //
+    // Salvesta see fail nimega index.html kausta:
+    // C:\Users\kadi.maripuu\OneDrive - Baltic WorkBoats AS\Töölaud\e-kaart
+    //
+    // Selle kõrval peab asuma olemasolev alamkaust "fotod".
+    // Failinimed vastavad sinu kaustast leitud fotodele.
+    //
+    // e-kaart/
+    //   index.html
+    //   fotod/
+    //     foto1.jpg.jpg
+    //     foto2.jpg.JPG
+    //     foto3.jpg.jpg
+    //     foto4.jpg.jpg
+    //     foto5.jpg.jpg
+
+    const FOTOD = [
+      { fail: "fotod/foto1.jpg.jpg", tekst: "BWB · Meie meeskond" },
+      { fail: "fotod/foto2.jpg.JPG", tekst: "BWB · Ühes paadis" },
+      { fail: "fotod/foto3.jpg.jpg", tekst: "BWB · Ühine kurss" },
+      { fail: "fotod/foto4.jpg.jpg", tekst: "BWB · Koos edasi" },
+      { fail: "fotod/foto5.jpg.jpg", tekst: "BWB · Tere tulemast pardale!" }
+    ];
+
+    // Soovi korral sisesta enda kasutusõigusega eestikeelse merelaulu
+    // failitee, näiteks "muusika/merelaul.mp3".
+    //
+    // Tühja väärtuse korral kõlab omaloodud mereline instrumentaalvalss.
+    // Muusika algab ümbriku või muusikanupu vajutamisel.
+    const MERELAULU_FAIL = "";
+
+    // ─── OLEK ────────────────────────────────────────────────
+
+    let fotod = [];
+    let tahed = [];
+    let killud = [];
+
+    let avatud = false;
+    let avamiseAeg = 0;
+    let laadimisVigu = 0;
+
+    let audioContext;
+    let masterGain;
+    let muusikaTaimer;
+    let muusikaSees = false;
+    let heliVersioon = 0;
+    let jargmineNoot = 0;
+    let muusikaSamm = 0;
+    let laul;
+
+    const muusikaNupp = document.getElementById("muusika");
+    const teade = document.getElementById("teade");
+    const laadimine = document.getElementById("laadimine");
+
+    document.getElementById("uuesti").addEventListener("click", () => {
+      avatud = false;
+      killud = [];
+    });
+
+    muusikaNupp.addEventListener("click", () => {
+      if (muusikaSees) {
+        peataMuusika();
+      } else {
+        kaivitaMuusika();
+      }
+    });
+
+    // ─── LAADIMINE JA ALGSEADISTUS ────────────────────────────
+
+    function preload() {
+      FOTOD.forEach((foto, indeks) => {
+        const kirje = {
+          pilt: null,
+          tekst: foto.tekst,
+          indeks,
+          viga: false
+        };
+
+        fotod.push(kirje);
+
+        loadImage(
+          foto.fail,
+          pilt => {
+            kirje.pilt = pilt;
+          },
+          () => {
+            kirje.viga = true;
+            laadimisVigu++;
+          }
+        );
+      });
+    }
+
+    function setup() {
+      const pind = createCanvas(windowWidth, windowHeight);
+
+      pixelDensity(min(window.devicePixelRatio || 1, 2));
+      textAlign(CENTER, CENTER);
+
+      // Pointer-sündmus töötab nii hiire kui puuteekraaniga.
+      pind.elt.addEventListener("pointerdown", event => {
+        if (!event.isPrimary) return;
+
+        const ala = pind.elt.getBoundingClientRect();
+
+        const x = (event.clientX - ala.left) * width / ala.width;
+        const y = (event.clientY - ala.top) * height / ala.height;
+
+        avaYmbrik(x, y);
+      });
+
+      // Ümbrikku saab avada ka klaviatuuriga.
+      pind.elt.tabIndex = 0;
+      pind.elt.setAttribute(
+        "aria-label",
+        "BWB tervituskaart. Ümbriku avamiseks vajuta Enter."
+      );
+
+      pind.elt.addEventListener("keydown", event => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          avaYmbrik(width / 2, ymbrikuY());
+        }
+      });
+
+      for (let i = 0; i < SEADED.tahtedeArv; i++) {
+        tahed.push({
+          x: random(),
+          y: random(),
+          suurus: random(1, 3.3),
+          faas: random(TWO_PI),
+          kiirus: random(0.5, 1.5)
+        });
+      }
+
+      laadimine.hidden = true;
+
+      if (laadimisVigu > 0) {
+        teade.textContent =
+          `${laadimisVigu} fotot ei laaditud. Kontrolli kausta „fotod” ja failinimesid.`;
+      }
+    }
+
+    // ─── PÕHIANIMATSIOON ──────────────────────────────────────
+
+    function draw() {
+      const aeg = millis() / 1000;
+
+      joonistaTaust(aeg);
+      joonistaPealkiri();
+
+      if (avatud) {
+        joonistaFotod(aeg);
+        joonistaKillud();
+      } else {
+        joonistaYmbrik(aeg);
+      }
+
+      noStroke();
+      fill("#cae8f9");
+      textFont("Arial");
+      textSize(width < 500 ? 12 : 14);
+      textAlign(CENTER, CENTER);
+
+      text(
+        avatud
+          ? "Ühes paadis. Ühise kursiga. BWB."
+          : "Klõpsa ümbrikul — sinu meeskond ootab!",
+        width / 2,
+        height - 27
+      );
+
+      cursor(
+        !avatud && tababYmbrikku(mouseX, mouseY)
+          ? HAND
+          : ARROW
+      );
+    }
+
+    // ─── MERELINE TAUST ───────────────────────────────────────
+
+    function joonistaTaust(aeg) {
+      const yleval = color("#031326");
+      const all = color("#075078");
+
+      for (let y = 0; y < height; y += 4) {
+        stroke(lerpColor(yleval, all, y / height));
+        line(0, y, width, y);
+      }
+
+      noStroke();
+
+      for (const taht of tahed) {
+        const alfa =
+          110 + 90 * sin(aeg * taht.kiirus + taht.faas);
+
+        fill(199, 238, 255, alfa);
+
+        circle(
+          taht.x * width,
+          taht.y * height,
+          taht.suurus
+        );
+      }
+
+      for (let kiht = 0; kiht < 5; kiht++) {
+        fill(25, 145, 205, 18 + kiht * 5);
+
+        beginShape();
+        vertex(0, height);
+
+        for (let x = 0; x <= width + 16; x += 16) {
+          const y =
+            height * 0.76 +
+            kiht * 25 +
+            sin(
+              x * 0.009 +
+              aeg * SEADED.laineteKiirus +
+              kiht
+            ) * 17 +
+            sin(x * 0.015 - aeg * 0.4) * 5;
+
+          vertex(x, y);
+        }
+
+        vertex(width, height);
+        endShape(CLOSE);
+      }
+    }
+
+    function joonistaPealkiri() {
+      noStroke();
+      textAlign(CENTER, CENTER);
+      textFont("Georgia");
+      textStyle(NORMAL);
+      textSize(constrain(width * 0.047, 24, 44));
+      fill("#e1f5ff");
+
+      text(
+        "Tere tulemast pardale!",
+        width / 2,
+        height * 0.17
+      );
+
+      textFont("Arial");
+      textSize(constrain(width * 0.024, 12, 17));
+      fill("#9dd5f2");
+
+      text(
+        "Meie inimesed. Meie ühine teekond.",
+        width / 2,
+        height * 0.17 + 38
+      );
+    }
+
+    // ─── SÄDELEV ÜMBRIK ───────────────────────────────────────
+
+    function ymbrikuSkaala() {
+      return min(
+        1,
+        width * 0.8 / SEADED.ymbrikuLaius,
+        height * 0.36 / SEADED.ymbrikuKorgus
+      );
+    }
+
+    function ymbrikuY() {
+      return height * 0.53 + sin(millis() / 850) * 6;
+    }
+
+    function tababYmbrikku(x, y) {
+      const skaala = ymbrikuSkaala();
+
+      return (
+        abs(x - width / 2) <
+          SEADED.ymbrikuLaius * skaala / 2 &&
+        abs(y - ymbrikuY()) <
+          SEADED.ymbrikuKorgus * skaala / 2
+      );
+    }
+
+    function joonistaYmbrik(aeg) {
+      push();
+
+      translate(width / 2, ymbrikuY());
+      scale(ymbrikuSkaala());
+
+      const w = SEADED.ymbrikuLaius;
+      const h = SEADED.ymbrikuKorgus;
+
+      rectMode(CENTER);
+      noStroke();
+
+      // Pehme sinine kuma ümbriku ümber.
+      for (let i = 8; i > 0; i--) {
+        fill(55, 175, 255, 5);
+        rect(0, 0, w + i * 12, h + i * 12, 20);
+      }
+
+      stroke("#89d6ff");
+      strokeWeight(1.5);
+      fill("#126ec6");
+      rect(0, 0, w, h, 10);
+
+      fill("#258fe1");
+      triangle(-w / 2, -h / 2, 0, 24, -w / 2, h / 2);
+
+      fill("#1479d3");
+      triangle(w / 2, -h / 2, 0, 24, w / 2, h / 2);
+
+      fill("#2184d6");
+      triangle(-w / 2, h / 2, 0, -8, w / 2, h / 2);
+
+      fill("#399eea");
+      triangle(-w / 2, -h / 2, w / 2, -h / 2, 0, 24);
+
+      // BWB pitser.
+      noStroke();
+      fill("#c9eeff");
+      circle(0, 23, 76);
+
+      fill("#07519e");
+      circle(0, 23, 68);
+
+      fill("#ffffff");
+      textFont("Georgia");
+      textStyle(BOLD);
+      textSize(24);
+      textAlign(CENTER, CENTER);
+      text("BWB", 0, 24);
+      textStyle(NORMAL);
+
+      // Vilkuvad sädemed ümbriku pinnal.
+      for (let i = 0; i < 38; i++) {
+        const alfa = pow(
+          max(0, sin(aeg * 2.4 + i * 1.7)),
+          7
+        );
+
+        sade(
+          sin(i * 84.23) * w * 0.46,
+          sin(i * 37.81) * h * 0.43,
+          2 + alfa * 5,
+          alfa * 255
+        );
+      }
+
+      pop();
+    }
+
+    function sade(x, y, raadius, alfa) {
+      stroke(235, 250, 255, alfa);
+      strokeWeight(1.3);
+
+      line(x - raadius, y, x + raadius, y);
+      line(x, y - raadius, x, y + raadius);
+
+      noStroke();
+      fill(255, alfa);
+      circle(x, y, 2);
+    }
+
+    // ─── PLАHVATUS ────────────────────────────────────────────
+
+    function avaYmbrik(x, y) {
+      if (avatud || !tababYmbrikku(x, y)) return;
+
+      avatud = true;
+      avamiseAeg = millis();
+
+      kaivitaMuusika();
+
+      for (let i = 0; i < SEADED.sademeArv; i++) {
+        const nurk = random(TWO_PI);
+        const kiirus = random(2, SEADED.plahvatuseKiirus);
+
+        killud.push({
+          x: width / 2,
+          y: ymbrikuY(),
+          vx: cos(nurk) * kiirus,
+          vy: sin(nurk) * kiirus - 2,
+          elu: 255,
+          suurus: random(2, 7),
+          nurk: random(TWO_PI),
+          toon: random([
+            "#c8efff",
+            "#54baff",
+            "#ffffff",
+            "#2e88ef",
+            "#f7d58c"
+          ])
+        });
+      }
+    }
+
+    function joonistaKillud() {
+      const dt = min(deltaTime / 16.667, 3);
+
+      for (let i = killud.length - 1; i >= 0; i--) {
+        const kild = killud[i];
+
+        kild.x += kild.vx * dt;
+        kild.y += kild.vy * dt;
+        kild.vy += SEADED.gravitatsioon * dt;
+        kild.vx *= pow(0.992, dt);
+        kild.elu -= 1.7 * dt;
+        kild.nurk += 0.05 * dt;
+
+        push();
+        translate(kild.x, kild.y);
+        rotate(kild.nurk);
+
+        const toon = color(kild.toon);
+        toon.setAlpha(max(0, kild.elu));
+
+        noStroke();
+        fill(toon);
+        rectMode(CENTER);
+        rect(0, 0, kild.suurus, kild.suurus * 0.65);
+
+        if (i % 5 === 0) {
+          sade(0, 0, kild.suurus, max(0, kild.elu));
+        }
+
+        pop();
+
+        if (kild.elu <= 0) {
+          killud.splice(i, 1);
+        }
+      }
+    }
+
+    // ─── FOTODE PAIGUTUS JA ANIMATSIOON ────────────────────────
+
+    function fotoPaigutus(indeks) {
+      const arv = fotod.length;
+      const veerud = width < 600 ? 2 : 3;
+      const read = ceil(arv / veerud);
+
+      const algusY = height * 0.29;
+      const vabaKorgus = max(40, height - algusY - 76);
+
+      const skaala = min(
+        1,
+        (width - 42) /
+          (veerud * (SEADED.fotoLaius + SEADED.fotoVahe)),
+        vabaKorgus /
+          (read * (SEADED.fotoKorgus + SEADED.fotoVahe))
+      );
+
+      const rida = floor(indeks / veerud);
+      const reasArv = min(veerud, arv - rida * veerud);
+
+      return {
+        x:
+          width / 2 +
+          ((indeks % veerud) - (reasArv - 1) / 2) *
+          (SEADED.fotoLaius + SEADED.fotoVahe) *
+          skaala,
+
+        y:
+          algusY +
+          vabaKorgus / 2 +
+          (rida - (read - 1) / 2) *
+          (SEADED.fotoKorgus + SEADED.fotoVahe) *
+          skaala,
+
+        skaala
+      };
+    }
+
+    function joonistaFotod(aeg) {
+      fotod.forEach((foto, indeks) => {
+        const edenemine = constrain(
+          (
+            millis() -
+            avamiseAeg -
+            indeks * SEADED.fotodeViivitus
+          ) / SEADED.avanemiseKestus,
+          0,
+          1
+        );
+
+        if (edenemine <= 0) return;
+
+        const sujuv = 1 - pow(1 - edenemine, 3);
+        const siht = fotoPaigutus(indeks);
+
+        const x = lerp(width / 2, siht.x, sujuv);
+
+        const y =
+          lerp(height * 0.53, siht.y, sujuv) -
+          sin(edenemine * PI) * 90 +
+          sin(aeg + indeks) *
+          SEADED.fotoHeljumine *
+          siht.skaala *
+          edenemine;
+
+        push();
+
+        translate(x, y);
+        rotate(sin(indeks * 7.3) * 0.035 * sujuv);
+        scale(siht.skaala * sujuv);
+
+        const w = SEADED.fotoLaius;
+        const h = SEADED.fotoKorgus;
+
+        rectMode(CENTER);
+        noStroke();
+
+        drawingContext.shadowColor = "rgba(0, 0, 20, 0.45)";
+        drawingContext.shadowBlur = 18;
+
+        fill("#f2f8fc");
+        rect(0, 0, w, h, 5);
+
+        drawingContext.shadowBlur = 0;
+
+        if (foto.pilt) {
+          // Kogu foto jääb nähtavale: grupipildi servi ei kärbita.
+          const pildiSkaala = min(
+            (w - 16) / foto.pilt.width,
+            (h - 34) / foto.pilt.height
+          );
+
+          imageMode(CENTER);
+
+          image(
+            foto.pilt,
+            0,
+            -8,
+            foto.pilt.width * pildiSkaala,
+            foto.pilt.height * pildiSkaala
+          );
+        } else {
+          fill("#d7e9f2");
+          rect(0, -8, w - 16, h - 34, 3);
+
+          fill("#35607b");
+          textFont("Arial");
+          textSize(13);
+          textAlign(CENTER, CENTER);
+          text("Fotot ei saanud laadida", 0, -8);
+        }
+
+        fill("#13507a");
+        textFont("Arial");
+        textSize(11);
+        textAlign(CENTER, CENTER);
+        text(foto.tekst, 0, h / 2 - 13);
+
+        pop();
+      });
+    }
+
+    // ─── MUUSIKA ──────────────────────────────────────────────
+    //
+    // Web Audio API loob õrna originaalse merelise valsi.
+    // Tegemist ei ole olemasoleva laulu salvestisega.
+    // p5.sound lisateeki pole vaja.
+
+    async function kaivitaMuusika() {
+      if (muusikaSees) return;
+
+      muusikaSees = true;
+      const versioon = ++heliVersioon;
+
+      muusikaNupp.textContent = "♫ Muusika välja";
+
+      try {
+        if (MERELAULU_FAIL) {
+          if (!laul) {
+            laul = new Audio(MERELAULU_FAIL);
+            laul.loop = true;
+          }
+
+          laul.volume = constrain(
+            SEADED.muusikaHelitugevus * 3,
+            0,
+            1
+          );
+
+          await laul.play();
+
+          if (versioon !== heliVersioon && !muusikaSees) {
+            laul.pause();
+          }
+
+          return;
+        }
+
+        if (!audioContext) {
+          const AudioAPI =
+            window.AudioContext || window.webkitAudioContext;
+
+          audioContext = new AudioAPI();
+
+          masterGain = audioContext.createGain();
+          masterGain.gain.value = 0;
+          masterGain.connect(audioContext.destination);
+        }
+
+        await audioContext.resume();
+
+        if (versioon !== heliVersioon) return;
+
+        masterGain.gain.cancelScheduledValues(
+          audioContext.currentTime
+        );
+
+        masterGain.gain.setTargetAtTime(
+          SEADED.muusikaHelitugevus,
+          audioContext.currentTime,
+          0.08
+        );
+
+        jargmineNoot = audioContext.currentTime + 0.04;
+        muusikaSamm = 0;
+
+        clearInterval(muusikaTaimer);
+        ajastaMuusika();
+
+        muusikaTaimer = setInterval(ajastaMuusika, 70);
+      } catch (viga) {
+        if (versioon === heliVersioon) {
+          peataMuusika();
+          teade.textContent =
+            "Muusikat ei saanud käivitada. Kontrolli helifaili või proovi uuesti.";
+        }
+
+        console.warn("Muusika käivitamine ebaõnnestus:", viga);
+      }
+    }
+
+    function peataMuusika() {
+      muusikaSees = false;
+      heliVersioon++;
+
+      clearInterval(muusikaTaimer);
+
+      if (laul) {
+        laul.pause();
+      }
+
+      if (masterGain && audioContext) {
+        masterGain.gain.cancelScheduledValues(
+          audioContext.currentTime
+        );
+
+        masterGain.gain.setTargetAtTime(
+          0,
+          audioContext.currentTime,
+          0.04
+        );
+      }
+
+      muusikaNupp.textContent = "♫ Muusika sisse";
+    }
+
+    function mangiNoot(
+      midi,
+      algus,
+      kestus,
+      tugevus,
+      kuju = "triangle"
+    ) {
+      const ostsillaator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+
+      ostsillaator.type = kuju;
+
+      ostsillaator.frequency.value =
+        440 * Math.pow(2, (midi - 69) / 12);
+
+      gain.gain.setValueAtTime(0, algus);
+      gain.gain.linearRampToValueAtTime(
+        tugevus,
+        algus + 0.025
+      );
+      gain.gain.exponentialRampToValueAtTime(
+        0.001,
+        algus + kestus
+      );
+
+      ostsillaator.connect(gain);
+      gain.connect(masterGain);
+
+      ostsillaator.start(algus);
+      ostsillaator.stop(algus + kestus + 0.03);
+
+      ostsillaator.onended = () => {
+        ostsillaator.disconnect();
+        gain.disconnect();
+      };
+    }
+
+    function ajastaMuusika() {
+      if (!muusikaSees || !audioContext) return;
+
+      const look = 60 / SEADED.muusikaTempo;
+
+      const meloodia = [
+        62, 66, 69, 74, 73, 69,
+        67, 71, 74, 76, 74, 71,
+        69, 73, 76, 78, 76, 73,
+        74, 69, 66, 64, 66, 62,
+        66, 69, 74, 78, 76, 74,
+        71, 67, 62, 67, 69, 71,
+        73, 69, 64, 67, 66, 64,
+        62, 66, 69, 74, 69, 62
+      ];
+
+      const bassid = [38, 43, 45, 38, 38, 43, 45, 38];
+
+      const akordid = [
+        [50, 54, 57],
+        [55, 59, 62],
+        [57, 61, 64],
+        [50, 54, 57],
+        [50, 54, 57],
+        [55, 59, 62],
+        [57, 61, 64],
+        [50, 54, 57]
+      ];
+
+      // Taustale jäänud brauserikaardi järel jätka praegusest hetkest.
+      if (jargmineNoot < audioContext.currentTime - 0.2) {
+        jargmineNoot = audioContext.currentTime + 0.03;
+      }
+
+      while (jargmineNoot < audioContext.currentTime + 0.22) {
+        const indeks = muusikaSamm % meloodia.length;
+        const takt = floor(indeks / 6);
+        const taktiSamm = indeks % 6;
+
+        mangiNoot(
+          meloodia[indeks],
+          jargmineNoot,
+          look * 0.44,
+          0.45
+        );
+
+        if (taktiSamm === 0) {
+          mangiNoot(
+            bassid[takt],
+            jargmineNoot,
+            look * 0.85,
+            0.5,
+            "sine"
+          );
+        }
+
+        if (taktiSamm === 2 || taktiSamm === 4) {
+          akordid[takt].forEach(noot => {
+            mangiNoot(
+              noot,
+              jargmineNoot,
+              look * 0.35,
+              0.12
+            );
+          });
+        }
+
+        jargmineNoot += look / 2;
+        muusikaSamm++;
+      }
+    }
+
+    // ─── AKNASUURUSE MUUTUMINE ────────────────────────────────
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+    }
+
+    // Näita selget teadet, kui p5.js ei saanud internetist laadida.
+    if (!window.p5) {
+      laadimine.textContent =
+        "Kaardi avamiseks on vaja internetiühendust. Kontrolli ühendust ja laadi leht uuesti.";
+    }
+  </script>
+</body>
+</html>
